@@ -4,6 +4,48 @@
 #include <EventDispatcher.hpp>
 #include <WiFiManager.hpp>
 
+class BodyStream : public Stream {
+public:
+  BodyStream(WiFiClient *wifiClient, HTTPClient *httpClient) {
+    this->wifiClient = wifiClient;
+    this->httpClient = httpClient;
+    this->bytesLeft = this->httpClient->getSize();
+  }
+  ~BodyStream() {}
+
+  int available() {
+    if (!this->httpClient->connected()) {
+      return 0;
+    }
+
+    return this->bytesLeft;
+  }
+
+  size_t readBytes(uint8_t *buffer, size_t length) {
+    if (this->bytesLeft == 0) {
+      return 0;
+    }
+
+    int bytesRead = this->wifiClient->readBytes(
+        buffer, std::min((size_t)this->bytesLeft, length));
+
+    if (this->bytesLeft > 0) {
+      this->bytesLeft -= bytesRead;
+    }
+
+    return bytesRead;
+  }
+
+  size_t write(uint8_t buffer) { return this->wifiClient->write(buffer); }
+  int read() { return this->wifiClient->read(); }
+  int peek() { return this->wifiClient->peek(); }
+
+private:
+  WiFiClient *wifiClient;
+  HTTPClient *httpClient;
+  int bytesLeft;
+};
+
 class SingleHostHTTPSClient {
 public:
   struct Request {
@@ -13,7 +55,7 @@ public:
   struct Response {
     const char *error;
     int statusCode;
-    const char *body;
+    BodyStream *body;
   };
 
   SingleHostHTTPSClient(const char *host, const char *pemCert,
@@ -65,11 +107,9 @@ public:
             // handled
             Serial.printf("[HTTP] GET... code: %d\n", httpCode);
 
-            // read response body as a string
-            String payload = http.getString();
-            Serial.println(payload);
+            BodyStream body(&client, &http);
 
-            onResponse(Response{nullptr, httpCode, payload.c_str()});
+            onResponse(Response{nullptr, httpCode, &body});
           } else {
             // print out the error message
             Serial.printf("[HTTP] GET... failed, error: %s\n",
@@ -90,7 +130,7 @@ public:
 
 private:
   void setClock(std::function<void(bool)> onClockSet,
-                unsigned long timeoutMs = 10000) {
+                unsigned long timeoutMs = 60000) {
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
 
     Serial.println("Waiting for NTP time sync: ");

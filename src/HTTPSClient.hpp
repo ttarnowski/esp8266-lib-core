@@ -1,5 +1,6 @@
 #pragma once
 
+#include <CertStoreBearSSL.h>
 #include <ESP8266HTTPClient.h>
 #include <EventDispatcher.hpp>
 #include <WiFiManager.hpp>
@@ -48,24 +49,74 @@ private:
   int bytesLeft;
 };
 
-class SingleHostHTTPSClient {
+enum HTTPMethod {
+  HTTP_GET,
+  HTTP_HEAD,
+  HTTP_POST,
+  HTTP_PUT,
+  HTTP_PATCH,
+  HTTP_DELETE,
+  HTTP_OPTIONS
+};
+
+class RequestBuilder;
+
+struct Request {
+  static RequestBuilder build(HTTPMethod method);
+  const char *baseUrl;
+  const char *path;
+  HTTPMethod method;
+  const char *body;
+  std::vector<std::pair<const char *, const char *>> headers;
+};
+
+class RequestBuilder {
 public:
-  struct Request {
-    const char *path;
-  };
+  RequestBuilder(HTTPMethod m) { request.method = m; }
 
-  struct Response {
-    const char *error;
-    int statusCode;
-    BodyStream *body;
-  };
+  operator Request &&() { return std::move(request); }
 
-  SingleHostHTTPSClient(const char *host, const char *pemCert,
-                        WiFiManager *wifiManager, Timer *timer) {
-    this->host = host;
-    this->pemCert = pemCert;
+  RequestBuilder &baseUrl(const char *u) {
+    request.baseUrl = u;
+    return *this;
+  }
+
+  RequestBuilder &path(const char *p) {
+    request.path = p;
+    return *this;
+  }
+
+  RequestBuilder &body(const char *b) {
+    request.body = b;
+    return *this;
+  }
+
+  RequestBuilder &
+  headers(std::vector<std::pair<const char *, const char *>> h) {
+    request.headers = h;
+    return *this;
+  }
+
+private:
+  Request request;
+};
+
+RequestBuilder Request::build(HTTPMethod method) {
+  return RequestBuilder(method);
+}
+
+struct Response {
+  const char *error;
+  int statusCode;
+  BodyStream *body;
+};
+
+class HTTPSClient {
+public:
+  HTTPSClient(CertStore *certStore, WiFiManager *wifiManager, Timer *timer) {
     this->wifiManager = wifiManager;
     this->timer = timer;
+    this->certStore = certStore;
   }
 
   void sendRequest(Request request, std::function<void(Response)> onResponse) {
@@ -82,39 +133,42 @@ public:
         }
 
         BearSSL::WiFiClientSecure client;
-        BearSSL::X509List list(this->pemCert);
-        client.setTrustAnchors(&list);
+        client.setCertStore(this->certStore);
 
         HTTPClient http;
 
         Serial.print("[HTTP] begin...\n");
 
-        char url[strlen(this->host) + strlen(request.path) +
-                 strlen("https://") + 1];
+        char url[strlen(request.baseUrl) + strlen(request.path) + 1];
 
-        strcpy(url, "https://");
-        strcat(url, this->host);
+        strcpy(url, request.baseUrl);
         strcat(url, request.path);
 
         if (http.begin(client, url)) {
+          char method[10];
+          this->readMethod(request.method, method);
 
-          Serial.printf("[HTTP] GET %s\n", url);
+          Serial.printf("[HTTP] %s %s\n", method, url);
           // start connection and send HTTP header, set the HTTP method and
           // request body
-          int httpCode = http.GET();
+          for (auto &h : request.headers) {
+            http.addHeader(h.first, h.second);
+          }
+
+          int httpCode = http.sendRequest(method, String(request.body));
 
           // httpCode will be negative on error
           if (httpCode > 0) {
             // HTTP header has been send and Server response header has been
             // handled
-            Serial.printf("[HTTP] GET... code: %d\n", httpCode);
+            Serial.printf("[HTTP] %s... code: %d\n", method, httpCode);
 
             BodyStream body(&client, &http);
 
             onResponse(Response{nullptr, httpCode, &body});
           } else {
             // print out the error message
-            Serial.printf("[HTTP] GET... failed, error: %s\n",
+            Serial.printf("[HTTP] %s... failed, error: %s\n", method,
                           http.errorToString(httpCode).c_str());
             onResponse(Response{http.errorToString(httpCode).c_str(), httpCode,
                                 nullptr});
@@ -155,8 +209,39 @@ private:
         [onClockSet]() { onClockSet(false); }, timeoutMs);
   }
 
-  const char *host;
-  const char *pemCert;
+  void readMethod(HTTPMethod method, char *methodValue) {
+    switch (method) {
+    case HTTP_OPTIONS:
+      strcpy(methodValue, "OPTIONS");
+      break;
+
+    case HTTP_DELETE:
+      strcpy(methodValue, "DELETE");
+      break;
+
+    case HTTP_PATCH:
+      strcpy(methodValue, "PATCH");
+      break;
+
+    case HTTP_PUT:
+      strcpy(methodValue, "PUT");
+      break;
+
+    case HTTP_POST:
+      strcpy(methodValue, "POST");
+      break;
+
+    case HTTP_HEAD:
+      strcpy(methodValue, "HEAD");
+      break;
+
+    default:
+      strcpy(methodValue, "GET");
+      break;
+    }
+  }
+
   WiFiManager *wifiManager;
   Timer *timer;
+  CertStore *certStore;
 };

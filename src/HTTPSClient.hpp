@@ -61,35 +61,42 @@ enum HTTPMethod {
 
 class RequestBuilder;
 
-struct Request {
-  static RequestBuilder build(HTTPMethod method);
-  const char *baseUrl;
-  const char *path;
+class Request {
+public:
+  static RequestBuilder build(HTTPMethod method, const char *url);
+  const char *url;
   HTTPMethod method;
-  const char *body;
+  Stream *body = nullptr;
+  size_t bodySize = 0;
+  const char *bodyStr = nullptr;
   std::vector<std::pair<const char *, const char *>> headers;
 };
 
 class RequestBuilder {
 public:
-  RequestBuilder(HTTPMethod m) { request.method = m; }
+  RequestBuilder(HTTPMethod method, const char *url) {
+    request.method = method;
+    request.url = url;
+  }
 
   operator Request &&() { return std::move(request); }
 
-  RequestBuilder &baseUrl(const char *u) {
-    request.baseUrl = u;
-    return *this;
-  }
-
-  RequestBuilder &path(const char *p) {
-    request.path = p;
-    return *this;
-  }
-
   RequestBuilder &body(const char *b) {
-    request.body = b;
+    request.bodyStr = b;
+    request.bodySize = strlen(b);
+    request.body = nullptr;
     return *this;
   }
+
+  RequestBuilder &body(Stream *s, size_t size) {
+    request.body = s;
+    request.bodySize = size;
+    request.bodyStr = nullptr;
+
+    return *this;
+  }
+
+  RequestBuilder &body(File *file) { return this->body(file, file->size()); }
 
   RequestBuilder &
   headers(std::vector<std::pair<const char *, const char *>> h) {
@@ -101,8 +108,8 @@ private:
   Request request;
 };
 
-RequestBuilder Request::build(HTTPMethod method) {
-  return RequestBuilder(method);
+RequestBuilder Request::build(HTTPMethod method, const char *url) {
+  return RequestBuilder(method, url);
 }
 
 struct Response {
@@ -139,23 +146,26 @@ public:
 
         Serial.print("[HTTP] begin...\n");
 
-        char url[strlen(request.baseUrl) + strlen(request.path) + 1];
-
-        strcpy(url, request.baseUrl);
-        strcat(url, request.path);
-
-        if (http.begin(client, url)) {
+        if (http.begin(client, request.url)) {
           char method[10];
           this->readMethod(request.method, method);
 
-          Serial.printf("[HTTP] %s %s\n", method, url);
+          Serial.printf("[HTTP] %s %s\n", method, request.url);
           // start connection and send HTTP header, set the HTTP method and
           // request body
           for (auto &h : request.headers) {
             http.addHeader(h.first, h.second);
           }
 
-          int httpCode = http.sendRequest(method, String(request.body));
+          int httpCode;
+
+          if (request.body == nullptr && request.bodyStr == nullptr) {
+            httpCode = http.sendRequest(method, (uint8_t *)nullptr, 0);
+          } else if (request.body != nullptr) {
+            httpCode = http.sendRequest(method, request.body, request.bodySize);
+          } else {
+            httpCode = http.sendRequest(method, String(request.bodyStr));
+          }
 
           // httpCode will be negative on error
           if (httpCode > 0) {

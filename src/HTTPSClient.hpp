@@ -4,6 +4,7 @@
 #include <ESP8266HTTPClient.h>
 #include <EventDispatcher.hpp>
 #include <WiFiManager.hpp>
+#include <setClock.hpp>
 
 class BodyStream : public Stream {
 public:
@@ -49,23 +50,15 @@ private:
   int bytesLeft;
 };
 
-enum HTTPMethod {
-  HTTP_GET,
-  HTTP_HEAD,
-  HTTP_POST,
-  HTTP_PUT,
-  HTTP_PATCH,
-  HTTP_DELETE,
-  HTTP_OPTIONS
-};
-
 class RequestBuilder;
 
 class Request {
 public:
-  static RequestBuilder build(HTTPMethod method, const char *url);
+  enum Method { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS };
+
+  static RequestBuilder build(Request::Method method, const char *url);
   const char *url;
-  HTTPMethod method;
+  Request::Method method;
   Stream *body = nullptr;
   size_t bodySize = 0;
   const char *bodyStr = nullptr;
@@ -74,7 +67,7 @@ public:
 
 class RequestBuilder {
 public:
-  RequestBuilder(HTTPMethod method, const char *url) {
+  RequestBuilder(Request::Method method, const char *url) {
     request.method = method;
     request.url = url;
   }
@@ -108,7 +101,7 @@ private:
   Request request;
 };
 
-RequestBuilder Request::build(HTTPMethod method, const char *url) {
+RequestBuilder Request::build(Request::Method method, const char *url) {
   return RequestBuilder(method, url);
 }
 
@@ -133,7 +126,7 @@ public:
         return;
       }
 
-      this->setClock([request, onResponse, this](bool success) {
+      setClock(this->timer, [request, onResponse, this](bool success) {
         if (!success) {
           onResponse(Response{"could not synchronize the time", -1, nullptr});
           return;
@@ -195,53 +188,29 @@ public:
   }
 
 private:
-  void setClock(std::function<void(bool)> onClockSet,
-                unsigned long timeoutMs = 60000) {
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-
-    Serial.println("Waiting for NTP time sync: ");
-
-    this->timer->setOnLoopUntil(
-        [onClockSet]() {
-          time_t now = time(nullptr);
-          if (now >= 8 * 3600 * 2) {
-            Serial.println("");
-            struct tm timeinfo;
-            gmtime_r(&now, &timeinfo);
-            Serial.print("Current time: ");
-            Serial.print(asctime(&timeinfo));
-            onClockSet(true);
-            return true;
-          }
-
-          return false;
-        },
-        [onClockSet]() { onClockSet(false); }, timeoutMs);
-  }
-
-  void readMethod(HTTPMethod method, char *methodValue) {
+  void readMethod(Request::Method method, char *methodValue) {
     switch (method) {
-    case HTTP_OPTIONS:
+    case Request::OPTIONS:
       strcpy(methodValue, "OPTIONS");
       break;
 
-    case HTTP_DELETE:
+    case Request::DELETE:
       strcpy(methodValue, "DELETE");
       break;
 
-    case HTTP_PATCH:
+    case Request::PATCH:
       strcpy(methodValue, "PATCH");
       break;
 
-    case HTTP_PUT:
+    case Request::PUT:
       strcpy(methodValue, "PUT");
       break;
 
-    case HTTP_POST:
+    case Request::POST:
       strcpy(methodValue, "POST");
       break;
 
-    case HTTP_HEAD:
+    case Request::HEAD:
       strcpy(methodValue, "HEAD");
       break;
 
